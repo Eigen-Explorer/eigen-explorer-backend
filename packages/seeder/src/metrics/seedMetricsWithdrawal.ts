@@ -4,7 +4,6 @@ import { getSharesToUnderlying, getEthPrices } from '../utils/strategies'
 import {
 	bulkUpdateDbTransactions,
 	fetchLastSyncTime,
-	baseTime,
 	saveLastSyncBlock
 } from '../utils/seeder'
 
@@ -13,8 +12,19 @@ const timeSyncKey = 'lastSyncedTime_metrics_withdrawalHourly'
 export async function seedMetricsWithdrawalHourly() {
 	const prismaClient = getPrismaClient()
 	const withdrawalHourlyList: Omit<prisma.MetricWithdrawalHourly, 'id'>[] = []
+	let clearPrev = false
 
-	const startAt = await fetchLastSyncTime(timeSyncKey)
+	// Get appropriate startAt
+	let startAt = Number(await fetchLastSyncTime(timeSyncKey))
+	if (!startAt) {
+		const firstLogTimestamp = await getFirstLogTimestamp()
+		startAt = firstLogTimestamp
+			? firstLogTimestamp.getTime()
+			: new Date().getTime()
+		clearPrev = true
+	}
+
+	// Get appropriate endAt
 	const { timestamp: endAtTimestamp } =
 		await prismaClient.viewHourlyWithdrawalData.findFirstOrThrow({
 			select: { timestamp: true },
@@ -25,9 +35,7 @@ export async function seedMetricsWithdrawalHourly() {
 	// Bail early if there is no time diff to sync
 	if (endAt - startAt <= 0) {
 		console.log(
-			`[In Sync] [Metrics] Withdrawal Hourly from: ${new Date(
-				startAt
-			)} to: ${new Date(endAt)}`
+			`[In Sync] [Metrics] Withdrawal Hourly from: ${startAt} to: ${endAt}`
 		)
 		return
 	}
@@ -115,7 +123,7 @@ export async function seedMetricsWithdrawalHourly() {
 	// biome-ignore lint/suspicious/noExplicitAny: <explanation>
 	const dbTransactions: any[] = []
 
-	if (startAt === baseTime) {
+	if (clearPrev) {
 		dbTransactions.push(prismaClient.metricWithdrawalHourly.deleteMany())
 	}
 
@@ -130,11 +138,26 @@ export async function seedMetricsWithdrawalHourly() {
 
 	await bulkUpdateDbTransactions(
 		dbTransactions,
-		`[Metrics] Withdrawal Hourly from: ${new Date(startAt)} to: ${new Date(
-			endAt
-		)} size: ${withdrawalHourlyList.length}`
+		`[Metrics] Withdrawal Hourly from: ${startAt} to: ${endAt} size: ${withdrawalHourlyList.length}`
 	)
 
 	// Storing last synced block
 	await saveLastSyncBlock(timeSyncKey, BigInt(endAt))
+}
+
+/**
+ * Get first log timestamp
+ *
+ * @returns
+ */
+async function getFirstLogTimestamp() {
+	const prismaClient = getPrismaClient()
+
+	const firstLog = await prismaClient.withdrawalCompleted.findFirst({
+		select: { createdAt: true },
+		where: { receiveAsTokens: true },
+		orderBy: { createdAt: 'asc' }
+	})
+
+	return firstLog ? firstLog.createdAt : null
 }
